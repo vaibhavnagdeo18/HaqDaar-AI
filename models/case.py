@@ -7,6 +7,7 @@ import enum
 
 from core.database import Base
 
+
 class CaseStatus(str, enum.Enum):
     onboarding = "onboarding"
     verification_pending = "verification_pending"
@@ -27,7 +28,11 @@ class Case(Base):
     
     entitlement_total = Column(Numeric(12, 2), default=0)
     claimed_total = Column(Numeric(12, 2), default=0)
-    
+
+    # B2B multi-tenancy — both nullable so the WhatsApp flow is unaffected
+    partner_id = Column(UUID(as_uuid=True), ForeignKey("partners.id"), nullable=True)
+    external_ref_id = Column(String, nullable=True)  # partner's own policy/case number
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -35,3 +40,4 @@ class Case(Base):
     family = relationship("Family", back_populates="cases")
     claims = relationship("Claim", back_populates="case_info")
     disputes = relationship("Dispute", back_populates="case")
+    partner = relationship("Partner", back_populates="cases")

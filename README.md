@@ -1,90 +1,98 @@
 # GhostWriter AI (Haqdaar)
 
-> Empowering Indian families to navigate the complex post-death claims process with a WhatsApp-first, multilingual agentic AI system.
+> WhatsApp-first agentic system that helps Indian families file post-death EPF and insurance claims — with multilingual voice support, document quality checks, and auto-generated government forms.
 
 ---
 
-## Overview
+## What It Does
 
-GhostWriter AI (also known as Haqdaar) is a specialized agentic system designed to simplify the task of filing post-death claims for Indian families. Dealing with the loss of a loved one is hard enough; navigating the bureaucracy of EPF, insurance, and government schemes should not be.
+When a breadwinner dies, the family must file claims across EPF, EDLI insurance, state pension schemes, and more. The process requires multiple forms, document verification, and compliance checks — typically taking months with a lawyer. Haqdaar does this over WhatsApp in under 10 minutes.
 
-The system provides a seamless, empathetic interface via WhatsApp, supporting multiple Indian languages through voice and text. It uses a swarm of specialized AI agents to discover entitlements, analyze document quality, audit for compliance, and generate real claim forms automatically.
+The user sends a message. The system:
+1. Guides them through onboarding questions in their language (Telugu, Hindi, or English)
+2. Sends voice notes at every step using Sarvam TTS
+3. Verifies uploaded documents using Gemini Vision
+4. Discovers all eligible schemes and calculates total entitlement
+5. Runs a 100-point compliance audit
+6. Generates and delivers the official EPFO Form 5(IF) pre-filled with all their details
 
 ---
 
 ## Project Status
 
-| Feature | Status | Notes |
-| :--- | :--- | :--- |
-| Entitlement Agent | Functional | Core discovery logic active (EPF, State Schemes) |
-| Dispute Agent | Functional | Objection letter drafting active |
-| Quality Agent | Functional | Document clarity and type detection |
-| Compliance Agent | Functional | 100-point audit scoring |
-| Reconciliation Agent | Functional | Identity mismatch analysis and affidavit generation |
-| PDF Generation | Functional | Automatic EPF Form 20 and Claim Letter |
-| Admin Dashboard UI | Functional | Live case tracking at `/dashboard` |
-| Voice Notes (TTS) | Functional | OGG Opus conversion for WhatsApp delivery |
-| PostgreSQL Persistence | Functional | Full state machine persistence |
-| Celery Alerts | Functional | Daily 9 AM IST deadline notifications |
+| Feature | Status |
+| :--- | :--- |
+| WhatsApp webhook (Meta Cloud API) | Live |
+| Multilingual onboarding flow | Live — Telugu, Hindi, English |
+| Voice notes via Sarvam TTS | Live — OGG Opus for WhatsApp |
+| Document QualityAgent (Gemini Vision) | Live — 6-point pre-flight check |
+| EntitlementAgent | Live — EPF, EDLI, PMJJBY, state schemes |
+| ComplianceAgent (100-point audit) | Live |
+| Form5IF overlay (official EPFO template) | Live — pre-filled PDF delivered over WhatsApp |
+| EPF Form 20 fallback | Live |
+| GriefSupportAgent | Live — empathy intercept before claims flow |
+| ReconciliationAgent | Live — identity mismatch + affidavit generation |
+| DisputeAgent | Live — denial letter objection drafting |
+| B2B Claims-as-a-Service API | Live — multi-tenant, API key auth, webhooks |
+| Admin Dashboard | Live — `/dashboard` |
+| Celery deadline alerts | Live — daily 9 AM IST reminders |
+| PostgreSQL persistence | Live — full async state machine |
 
 ---
 
-## The Agentic Swarm
+## Agentic Swarm
 
-GhostWriter AI is powered by a team of specialized agents, each focused on a critical part of the claims lifecycle:
-
-- **Entitlement Agent**: Analyzes user demographics and employment history to discover eligible government and private schemes.
-- **Dispute Agent**: When a claim is denied, analyzes the denial letter and drafts precise, legal-grade objection letters.
-- **Quality Agent**: Assesses the quality of uploaded documents to ensure they are legible and complete.
-- **Compliance Agent**: Runs a 100-point audit on family data, automatically triggering form generation once all criteria are met.
-- **Reconciliation Agent**: Detects identity mismatches (e.g., Aadhaar vs. Death Certificate) and drafts "One-and-the-Same" person affidavits.
-- **Form Agent**: Maps collected family data to official templates (like EPF Form 20) and generates ready-to-submit PDFs.
-
-### Multilingual WhatsApp First
-
-- **Native Language Support**: Full support for Hindi, Telugu, and English.
-- **Voice Interaction**: Send voice notes and receive audio responses (transcoded to OGG Opus for WhatsApp playback).
-- **Automatic Deadlines**: Daily reminders about claim deadlines (30 days / 7 days / 24 hours) via Celery Beat.
+| Agent | Role |
+| :--- | :--- |
+| EntitlementAgent | Discovers eligible schemes (EPF, EDLI, PMJJBY, state pensions) from family data |
+| ComplianceAgent | 100-point audit — triggers form generation when score hits 100 |
+| QualityAgent | Gemini Vision 6-point check: legibility, lighting, framing, doc type, signature, stamp |
+| GriefSupportAgent | Detects grief/distress, responds with empathy, optionally pauses claims flow |
+| ReconciliationAgent | Detects name mismatches across documents, drafts affidavits |
+| DisputeAgent | Analyzes claim denial letters, drafts legal-grade objection responses |
+| FormAgent | Overlays family data onto official Form5IF.pdf template; falls back to ReportLab Form 20 |
 
 ---
 
 ## Tech Stack
 
-- **Backend**: FastAPI (Python)
-- **LLM and Reasoning**: Google Gemini 2.5 Flash
-- **STT / TTS / Translation**: Sarvam AI (optimized for Indian languages)
-- **Database**: PostgreSQL (Async SQLAlchemy)
-- **Task Queue**: Redis and Celery
-- **Document Generation**: ReportLab (PDF generation)
-- **Audio**: pydub and FFmpeg (WAV to OGG Opus)
-- **Dashboard**: Jinja2 and Tailwind CSS
+| Layer | Technology |
+| :--- | :--- |
+| Backend | FastAPI (async Python) |
+| LLM | Google Gemini 2.5 Flash |
+| STT / TTS / Translation | Sarvam AI (Indian language optimized) |
+| Messaging | Meta WhatsApp Cloud API v18 |
+| Database | PostgreSQL via async SQLAlchemy |
+| Migrations | Alembic |
+| Task queue | Celery + Redis |
+| PDF generation | ReportLab + pypdf overlay |
+| Audio | pydub + FFmpeg (WAV to OGG Opus) |
+| Infrastructure | Docker Compose |
 
 ---
 
 ## Architecture
 
-```mermaid
-graph TD
-    User((User)) -- WhatsApp/Voice --> WA[WhatsApp Service]
-    WA -- Webhook --> API[FastAPI App]
-
-    subgraph "Agentic Swarm (Gemini Powered)"
-        API --> EA[Entitlement Agent]
-        API --> DA[Dispute Agent]
-        API --> QA[Quality Agent]
-        API --> CA[Compliance Agent]
-        API --> RA[Reconciliation Agent]
-        API --> FA[Form Agent]
-    end
-
-    API --> DB[(PostgreSQL)]
-    API --> RD[Redis/Celery]
-    RD --> BEAT[Celery Beat: Deadline Alerts]
-
-    API --> Sarvam[Sarvam AI: STT/TTS/Translation]
-    API --> PDF[PDF Service: Form 20/Affidavits]
-
-    API --> Dash[Admin Dashboard: /dashboard]
+```
+User (WhatsApp)
+      |
+      v
+Meta Cloud API --> POST /webhook/whatsapp (ngrok / production URL)
+                          |
+                          v
+                    FastAPI (main.py)
+                          |
+          ┌───────────────┼───────────────┐
+          v               v               v
+    GriefAgent      OnboardingFlow    B2B API (/api/v1/b2b)
+                          |
+          ┌───────────────┼───────────────┐
+          v               v               v
+   QualityAgent   EntitlementAgent  ComplianceAgent
+                          |
+                    FormAgent (Form5IF overlay)
+                          |
+                    PDF delivered over WhatsApp
 ```
 
 ---
@@ -94,39 +102,78 @@ graph TD
 ### Prerequisites
 
 - Docker and Docker Compose
-- FFmpeg (included in Dockerfile)
-- API keys for Gemini, Sarvam, and Meta WhatsApp Business
+- Meta WhatsApp Business App (developer account)
+- API keys: Google Gemini, Sarvam AI
+- ngrok (for local webhook testing)
 
-### Setup and Run
+### Setup
 
-1. **Clone the repository**:
+1. Clone and configure:
     ```bash
     git clone https://github.com/vaibhavnagdeo18/ghostwriter.git
     cd ghostwriter
+    cp .env.example .env   # fill in your keys
     ```
 
-2. **Configure environment**: Create a `.env` file in the project root with the following variables:
-    ```
-    GOOGLE_API_KEY=
-    SARVAM_API_KEY=
-    WHATSAPP_ACCESS_TOKEN=
-    WHATSAPP_PHONE_NUMBER_ID=
-    DATABASE_URL=
-    REDIS_URL=
-    ```
-
-3. **Start the system**:
+2. Start services:
     ```bash
     docker-compose up --build
     ```
+    Alembic migrations run automatically on startup.
 
-4. **Simulate a journey**:
+3. Expose webhook:
     ```bash
-    ./demo_test.sh
+    ngrok http --domain=your-domain.ngrok-free.app 8000
     ```
-    This script simulates a full user journey from onboarding to PDF generation.
 
-5. **Monitor cases**: Visit `http://localhost:8000/dashboard` to view live case statuses and compliance scores.
+4. Configure Meta:
+    - Set webhook URL: `https://your-domain.ngrok-free.app/webhook/whatsapp`
+    - Verify token: value of `WHATSAPP_VERIFY_TOKEN` in `.env`
+    - Subscribe to `messages` field
+    - Subscribe WABA to app: `POST /{waba_id}/subscribed_apps`
+
+5. Send "hi" to your WhatsApp test number to start a claim.
+
+### Environment Variables
+
+```
+GOOGLE_API_KEY=
+SARVAM_API_KEY=
+SARVAM_BASE_URL=
+WHATSAPP_ACCESS_TOKEN=        # System User token (non-expiring)
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_VERIFY_TOKEN=
+WHATSAPP_BUSINESS_ACCOUNT_ID=
+DATABASE_URL=postgresql+asyncpg://user:password@postgres:5432/ghostwriter
+REDIS_URL=redis://redis:6379/0
+STORAGE_PATH=./documents
+SECRET_KEY=
+```
+
+---
+
+## B2B API
+
+Partners can integrate Haqdaar as a Claims-as-a-Service layer.
+
+```bash
+# Create partner (returns raw API key once)
+POST /api/v1/b2b/partners
+
+# Initialize a claim case
+POST /api/v1/b2b/initialize
+Header: X-API-KEY: <key>
+
+# Upload a document
+POST /api/v1/b2b/upload-doc/{case_id}
+Header: X-API-KEY: <key>
+
+# Get case status
+GET /api/v1/b2b/status/{case_id}
+Header: X-API-KEY: <key>
+```
+
+Results (including generated PDFs as base64) are delivered to the partner's webhook URL.
 
 ---
 
@@ -134,20 +181,38 @@ graph TD
 
 ```
 ghostwriter/
-├── main.py                  # Entry point, API webhooks, and state machine
-├── agents/                  # Specialized Gemini-powered agents
-├── core/                    # Database, Celery, and app configuration
-├── services/                # WhatsApp, Sarvam, Gemini, and PDF services
-├── models/                  # SQLAlchemy database models
-├── migrations/              # Alembic database migrations
-├── templates/               # Jinja2 dashboard templates
-├── data/                    # Scheme definitions and form templates
-├── demo_test.sh             # End-to-end integration test script
-└── docker-compose.yml       # Infrastructure orchestration
+├── main.py                        # Webhook handlers, onboarding state machine
+├── agents/
+│   ├── entitlement_agent.py
+│   ├── compliance_agent.py
+│   ├── quality_agent.py
+│   ├── support_agent.py
+│   ├── reconciliation_agent.py
+│   ├── dispute_agent.py
+│   └── form_agent.py
+├── api/v1/
+│   ├── b2b.py                     # B2B CaaS router
+│   └── schemas.py
+├── services/
+│   ├── whatsapp_service.py
+│   ├── gemini_service.py
+│   ├── sarvam_service.py
+│   ├── pdf_service.py
+│   └── form_overlay_service.py    # Form5IF coordinate overlay
+├── core/
+│   ├── config.py
+│   ├── database.py
+│   ├── auth.py
+│   └── celery_app.py
+├── models/
+├── migrations/
+├── templates/                     # Jinja2 dashboard
+├── Form5IF.pdf                    # Official EPFO template
+└── docker-compose.yml
 ```
 
 ---
 
 ## License
 
-This project is licensed under the MIT License.
+MIT

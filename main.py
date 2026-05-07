@@ -8,8 +8,11 @@ from sqlalchemy.orm import selectinload
 import logging
 import os
 import json
+import asyncio
 from pydantic import BaseModel
 from typing import List, Optional
+
+from sqlalchemy.orm.attributes import flag_modified
 
 from core.config import settings
 from core.database import engine, Base, AsyncSessionLocal
@@ -22,9 +25,11 @@ from agents.quality_agent import QualityAgent
 from agents.reconciliation_agent import ReconciliationAgent
 from agents.compliance_agent import ComplianceAgent
 from agents.form_agent import FormAgent
+from agents.support_agent import SupportAgent
 from services.pdf_service import PDFService
 
 from models import Family, Case, CaseStatus
+from api.v1.b2b import router as b2b_router
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -43,6 +48,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(b2b_router)
+
 templates = Jinja2Templates(directory="templates")
 
 whatsapp_service = WhatsAppService()
@@ -55,6 +62,7 @@ quality_agent = QualityAgent(gemini_service)
 reconciliation_agent = ReconciliationAgent(gemini_service, sarvam_service)
 compliance_agent = ComplianceAgent(gemini_service)
 form_agent = FormAgent(pdf_service)
+support_agent = SupportAgent(gemini_service)
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -126,11 +134,24 @@ async def send_translated_message_and_voice(phone: str, text: str, case: Case):
 async def process_user_message(sender_phone: str, message_text: str, session: AsyncSession):
     msg_clean = message_text.lower().strip()
     case = await get_or_create_case(sender_phone, session)
-    
+
+    # SupportAgent — runs first, before any claims logic
+    support_result = await support_agent.assess_message(
+        message_text,
+        preferred_language=case.onboarding_data.get("preferred_language", "English")
+    )
+    if support_result.is_grief_message:
+        support_msg = support_agent.build_whatsapp_message(support_result)
+        await whatsapp_service.send_text(sender_phone, support_msg)
+        if support_result.intercept:
+            return  # Pause claims flow for this turn; resume on next message
+
     if "generate letter" in msg_clean or "download" in msg_clean or "file claim" in msg_clean:
         await send_translated_message_and_voice(sender_phone, "Generating your formal EPF Form 20... please wait.", case)
         result = await form_agent.generate_epf_form(case.onboarding_data)
-        await whatsapp_service.send_document(sender_phone, result.pdf_bytes, "EPF_Form_20.pdf")
+        case.onboarding_data["esign_transaction_id"] = result.esign_transaction_id
+        caption = f"EPF Form 20 ready. eSign ID: {result.esign_transaction_id}"
+        await whatsapp_service.send_document(sender_phone, result.pdf_bytes, "EPF_Form_20.pdf", caption=caption)
         case.status = CaseStatus.filed
         await session.commit()
         return
@@ -180,9 +201,27 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
     elif field == "state":
         state_map = {"1": "Telangana", "2": "Andhra Pradesh", "3": "Maharashtra", "4": "Karnataka", "5": "Other"}
         case.onboarding_data[field] = state_map.get(msg_clean, msg_clean)
+    elif field == "death_certificate":
+        # For document uploads, msg_clean will be a local file path saved by the webhook handler.
+        # Run quality pre-flight before accepting the step.
+        if os.path.exists(msg_clean):
+            quality_result = await quality_agent.assess_document(msg_clean, expected_doc_type="death_certificate")
+            case.onboarding_data["death_certificate_quality_score"] = quality_result.quality_score
+            case.onboarding_data["death_certificate_issues"] = quality_result.issues
+            case.onboarding_data["death_certificate_type_match"] = not quality_result.type_mismatch
+            if not quality_result.is_valid:
+                feedback = quality_agent.build_whatsapp_feedback(quality_result)
+                await send_translated_message_and_voice(sender_phone, feedback, case)
+                flag_modified(case, "onboarding_data")
+                await session.commit()
+                return  # Hold at this step until a valid upload is received
+            case.onboarding_data[field] = msg_clean
+        else:
+            case.onboarding_data[field] = msg_clean
     else:
         case.onboarding_data[field] = msg_clean
 
+    flag_modified(case, "onboarding_data")
     case.onboarding_step += 1
     next_step = case.onboarding_step
 
@@ -202,27 +241,55 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         deadline_msg = "EPF Form 20 must be filed before bank nominee transfer. EPF deadline: 30 days. File EPF this week to stay on track."
         await send_translated_message_and_voice(sender_phone, deadline_msg, case)
 
-        # Task 1: Auto-generate PDF if 100/100
         if audit.compliance_grade == 100:
-            await send_translated_message_and_voice(sender_phone, "Score is 100/100! Automatically sending your EPF Form 20...", case)
-            template_path = "data/form_templates/epf_form_20_official.pdf"
-            if os.path.exists(template_path):
-                with open(template_path, "rb") as f:
-                    pdf_bytes = f.read()
-                
-                caption_text = "Your EPF Form 20 is ready. Please fill in your personal details, get it signed, and submit at your nearest EPFO office or MeeSeva centre."
+            await send_translated_message_and_voice(
+                sender_phone,
+                "Score is 100/100! Filling in the official Form 5(IF) with your details now...",
+                case
+            )
+            try:
+                # Use the official Form5IF template overlay
+                case_id_str = str(case.id)
+                form5if = await form_agent.generate_form5if(
+                    case.onboarding_data,
+                    case_id=case_id_str,
+                    save_to_disk=True,
+                    storage_path=settings.STORAGE_PATH,
+                )
+                case.onboarding_data["form5if_path"] = form5if.file_path
+
+                caption_text = (
+                    "Your official EPFO Form 5(IF) is pre-filled with your details. "
+                    "Print it, sign it, and submit at your nearest EPFO office or MeeSeva centre."
+                )
                 target_lang = case.onboarding_data.get("preferred_language", "English")
                 translated_caption = await sarvam_service.translate(caption_text, "English", target_lang)
-                
+
                 await whatsapp_service.send_document(
-                    sender_phone, 
-                    pdf_bytes, 
-                    "EPF_Form_20.pdf", 
-                    caption=translated_caption
+                    sender_phone,
+                    form5if.pdf_bytes,
+                    f"filled_Form5IF_{case_id_str[:8]}.pdf",
+                    caption=translated_caption,
                 )
                 case.status = CaseStatus.filed
-            else:
-                logger.error(f"Official template not found at {template_path}")
+                logger.info(f"Form5IF sent to {sender_phone}, saved at {form5if.file_path}")
+            except Exception as e:
+                logger.error(f"Form5IF overlay failed, falling back to generated form: {e}")
+                generated = await form_agent.generate_epf_form(case.onboarding_data)
+                case.onboarding_data["esign_transaction_id"] = generated.esign_transaction_id
+                caption_text = (
+                    f"Your EPF Form 20 is ready (eSign ID: {generated.esign_transaction_id}). "
+                    "Please sign it and submit at your nearest EPFO office."
+                )
+                target_lang = case.onboarding_data.get("preferred_language", "English")
+                translated_caption = await sarvam_service.translate(caption_text, "English", target_lang)
+                await whatsapp_service.send_document(
+                    sender_phone, generated.pdf_bytes, "EPF_Form_20.pdf", caption=translated_caption
+                )
+                case.status = CaseStatus.filed
+        flag_modified(case, "onboarding_data")
+        await session.commit()
+        return
 
     if next_step < len(ONBOARDING_QUESTIONS):
         await send_translated_message_and_voice(sender_phone, ONBOARDING_QUESTIONS[next_step]["text"], case)
@@ -231,9 +298,18 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         await send_translated_message_and_voice(sender_phone, "Onboarding complete.", case)
     await session.commit()
 
-@app.post("/webhook/whatsapp")
-async def handle_whatsapp_webhook(request: Request):
-    payload = await request.json()
+@app.get("/webhook/whatsapp")
+async def verify_whatsapp_webhook(request: Request):
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    if mode == "subscribe" and token == settings.WHATSAPP_VERIFY_TOKEN:
+        logger.info("WhatsApp webhook verified successfully")
+        return int(challenge)
+    logger.warning(f"Webhook verification failed: mode={mode}, token_match={token == settings.WHATSAPP_VERIFY_TOKEN}")
+    return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+async def _handle_payload(payload: dict):
     async with AsyncSession(engine) as session:
         try:
             if payload.get("object") == "whatsapp_business_account":
@@ -246,9 +322,23 @@ async def handle_whatsapp_webhook(request: Request):
                                 msg_type = message.get("type")
                                 if msg_type == "text":
                                     await process_user_message(sender_phone, message.get("text", {}).get("body", ""), session)
+                                elif msg_type in ("image", "document"):
+                                    media_id = message.get(msg_type, {}).get("id")
+                                    if media_id:
+                                        media_bytes = await whatsapp_service.download_media(media_id)
+                                        ext = "jpg" if msg_type == "image" else "pdf"
+                                        local_path = f"/tmp/wa_upload_{sender_phone}_{media_id}.{ext}"
+                                        with open(local_path, "wb") as f:
+                                            f.write(media_bytes)
+                                        await process_user_message(sender_phone, local_path, session)
         except Exception as e:
-            logger.error(f"Webhook error: {e}")
+            logger.error(f"Webhook processing error: {e}")
             await session.rollback()
+
+@app.post("/webhook/whatsapp")
+async def handle_whatsapp_webhook(request: Request):
+    payload = await request.json()
+    asyncio.create_task(_handle_payload(payload))
     return {"status": "received"}
 
 @app.get("/dashboard", response_class=HTMLResponse)

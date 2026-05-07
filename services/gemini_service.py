@@ -33,10 +33,24 @@ class GeminiService:
     async def process_image(self, image_path: str, prompt: str) -> str:
         """
         Process images (documents, denial notices) using Gemini Vision.
+        Supports JPEG/PNG directly and PDF (first page converted to image).
         """
         try:
             import PIL.Image
-            img = PIL.Image.open(image_path)
+            if image_path.lower().endswith(".pdf"):
+                from pypdf import PdfReader
+                from io import BytesIO
+                reader = PdfReader(image_path)
+                if not reader.pages:
+                    raise ValueError("Empty PDF")
+                # Extract images from first page; fall back to blank canvas
+                images = list(reader.pages[0].images)
+                if images:
+                    img = PIL.Image.open(BytesIO(images[0].data))
+                else:
+                    img = PIL.Image.new("RGB", (800, 600), color="white")
+            else:
+                img = PIL.Image.open(image_path)
             response = await self.vision_model.generate_content_async([prompt, img])
             return response.text
         except Exception as e:

@@ -1,12 +1,72 @@
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.lib.units import mm
 from io import BytesIO
 import logging
+import uuid
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+def _build_esign_block(styles, transaction_id: str, content: list):
+    """Appends a digital signature placeholder block to a ReportLab content list."""
+    content.append(Spacer(1, 20))
+    content.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+    content.append(Spacer(1, 8))
+
+    sig_title = ParagraphStyle(
+        "SigTitle", parent=styles["Normal"],
+        fontSize=10, fontName="Helvetica-Bold", spaceAfter=4
+    )
+    sig_body = ParagraphStyle(
+        "SigBody", parent=styles["Normal"],
+        fontSize=8, textColor=colors.grey, leading=12
+    )
+
+    content.append(Paragraph("DIGITAL SIGNATURE BLOCK", sig_title))
+    content.append(Paragraph(
+        "This document is pending Aadhaar eSign authentication. "
+        "To complete submission, the claimant must sign this document using their Aadhaar-linked mobile OTP "
+        "via the NSDL eSign Gateway.",
+        sig_body
+    ))
+    content.append(Spacer(1, 10))
+
+    sig_table_data = [
+        ["Field", "Value"],
+        ["eSign Transaction ID", transaction_id],
+        ["eSign Gateway", "NSDL eSign Service (mock)"],
+        ["Signature Status", "PENDING — Awaiting Aadhaar OTP"],
+        ["Timestamp", datetime.now().strftime("%d/%m/%Y %H:%M:%S IST")],
+    ]
+    sig_table = Table(sig_table_data, colWidths=[140, 300])
+    sig_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f0f0f0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    content.append(sig_table)
+    content.append(Spacer(1, 8))
+    content.append(Paragraph(
+        "Claimant Signature: ________________________________     Date: _______________",
+        styles["Normal"]
+    ))
+    content.append(Paragraph(
+        "Witness Signature:  ________________________________     Date: _______________",
+        styles["Normal"]
+    ))
+    content.append(Spacer(1, 4))
+    content.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+
 
 class PDFService:
     def generate_claim_letter(self, data: dict) -> bytes:
@@ -90,16 +150,46 @@ class PDFService:
         buffer.close()
         return pdf_bytes
 
-    def generate_epf_form_20(self, data: dict) -> bytes:
+    def generate_epf_form_20(self, data: dict, esign_transaction_id: str = None, partner_name: str = None) -> bytes:
         """
-        Generates a structured EPF Form 20 with specific requirements from Task 1.
+        Generates a structured EPF Form 20 with a digital signature block.
+        Embeds eSign transaction ID in PDF metadata when provided.
+        Renders a white-label partner header when partner_name is supplied.
         """
+        transaction_id = esign_transaction_id or f"ESIGN-MOCK-{uuid.uuid4().hex[:12].upper()}"
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=50, leftMargin=50, topMargin=50, bottomMargin=50)
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=50, leftMargin=50, topMargin=50, bottomMargin=50,
+            title="EPF Form 20 - Haqdaar",
+            author=partner_name or "Haqdaar AI",
+            subject=f"eSign Transaction: {transaction_id}",
+            keywords=f"EPF,Form20,eSign,{transaction_id}",
+        )
         styles = getSampleStyleSheet()
-        
+
         content = []
-        
+
+        # White-label header for B2B partners
+        if partner_name:
+            partner_header_style = ParagraphStyle(
+                "PartnerHeader", parent=styles["Normal"],
+                fontSize=9, textColor=colors.white,
+                backColor=colors.HexColor("#1a1a2e"),
+                alignment=1, spaceAfter=0,
+                leftPadding=8, rightPadding=8, topPadding=6, bottomPadding=6,
+            )
+            powered_style = ParagraphStyle(
+                "PoweredBy", parent=styles["Normal"],
+                fontSize=7, textColor=colors.HexColor("#888888"),
+                alignment=2, spaceAfter=12,
+            )
+            content.append(Paragraph(
+                f"CLAIMS PROCESSED BY: <b>{partner_name.upper()}</b>",
+                partner_header_style,
+            ))
+            content.append(Paragraph("Powered by Haqdaar AI Agentic Platform", powered_style))
+
         title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, alignment=1, spaceAfter=20)
         content.append(Paragraph("EPF FORM 20", title_style))
         content.append(Paragraph("(CLAIM FOR WITHDRAWAL OF PROVIDENT FUND BY NOMINEE/HEIRS)", styles['Normal']))
@@ -141,14 +231,12 @@ class PDFService:
         content.append(Paragraph(declaration, styles['Normal']))
         content.append(Spacer(1, 50))
         
-        content.append(Paragraph("Signature: __________________________", styles['Normal']))
-        content.append(Spacer(1, 10))
-        content.append(Paragraph(f"Date: {datetime.now().strftime('%d/%m/%Y')}", styles['Normal']))
-        
+        _build_esign_block(styles, transaction_id, content)
+
         doc.build(content)
         pdf_bytes = buffer.getvalue()
         buffer.close()
-        return pdf_bytes
+        return pdf_bytes, transaction_id
 
     def generate_affidavit(self, draft_text: str) -> bytes:
         """
