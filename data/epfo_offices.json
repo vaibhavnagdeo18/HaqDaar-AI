@@ -1,0 +1,26 @@
+{
+  "offices": [
+    {
+      "id": "HYD",
+      "name": "Hyderabad Regional Office",
+      "states": ["Telangana"],
+      "preferred_language": "Telugu",
+      "form_language": "Telugu",
+      "known_rejection_reasons": [
+        {
+          "reason": "Missing district magistrate attestation on death certificate",
+          "frequency": "high",
+          "prevention": "Always get DM attestation before submission"
+        },
+        {
+          "reason": "Bank account not in joint name",
+          "frequency": "medium", 
+          "prevention": "Add nominee's name to account before filing"
+        }
+      ],
+      "processing_time_days": 21,
+      "contact": "roehy@epfindia.gov.in",
+      "address": "Bhavishya Nidhi Bhawan, Barkatpura, Hyderabad"
+    }
+  ]
+}

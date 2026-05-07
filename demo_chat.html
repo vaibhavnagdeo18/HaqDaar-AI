@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Haqdaar Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: #e5ddd5;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+        }
+
+        .header {
+            background-color: #075e54;
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            align-items: center;
+            font-size: 18px;
+            font-weight: 600;
+            z-index: 10;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+
+        .header-avatar {
+            width: 40px;
+            height: 40px;
+            background-color: #128C7E;
+            border-radius: 50%;
+            margin-right: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .chat-container {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png');
+            background-repeat: repeat;
+        }
+
+        .message {
+            max-width: 80%;
+            margin-bottom: 12px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 15px;
+            line-height: 1.4;
+            position: relative;
+            word-wrap: break-word;
+            box-shadow: 0 1px 1px rgba(0,0,0,0.1);
+        }
+
+        .message.sent {
+            align-self: flex-end;
+            background-color: #dcf8c6;
+            border-top-right-radius: 0;
+        }
+
+        .message.received {
+            align-self: flex-start;
+            background-color: #ffffff;
+            border-top-left-radius: 0;
+        }
+        
+        .message.system {
+            align-self: center;
+            background-color: #e1e2e3;
+            font-size: 12px;
+            color: #555;
+            border-radius: 12px;
+            padding: 5px 12px;
+            max-width: 90%;
+            text-align: center;
+            margin-top: 10px;
+            margin-bottom: 10px;
+        }
+
+        .message img {
+            max-width: 100%;
+            border-radius: 5px;
+            margin-top: 5px;
+        }
+
+        .input-area {
+            background-color: #f0f0f0;
+            padding: 10px;
+            display: flex;
+            align-items: center;
+        }
+
+        .input-wrapper {
+            flex: 1;
+            background: white;
+            border-radius: 24px;
+            padding: 8px 15px;
+            display: flex;
+            align-items: center;
+        }
+
+        .icon-btn {
+            background: none;
+            border: none;
+            font-size: 20px;
+            color: #555;
+            cursor: pointer;
+            padding: 5px;
+            margin-right: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chat-input {
+            flex: 1;
+            border: none;
+            outline: none;
+            font-size: 16px;
+            padding: 5px;
+            min-width: 0;
+        }
+
+        .send-btn {
+            background-color: #128C7E;
+            color: white;
+            border: none;
+            width: 46px;
+            height: 46px;
+            border-radius: 50%;
+            margin-left: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .send-btn:active {
+            transform: scale(0.95);
+        }
+
+        .send-btn.recording {
+            background-color: #e53935;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        .send-btn svg {
+            width: 20px;
+            height: 20px;
+            fill: white;
+            margin-left: 3px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div class="header-avatar">🤖</div>
+        <div>
+            Haqdaar Agent
+            <div style="font-size: 12px; font-weight: 400; opacity: 0.8;">Online</div>
+        </div>
+    </div>
+
+    <div class="chat-container" id="chat-container">
+        <div class="message system">Messages are end-to-end simulated for this demo.</div>
+    </div>
+
+    <div class="input-area">
+        <div class="input-wrapper">
+            <button class="icon-btn" onclick="document.getElementById('file-input').click()">📎</button>
+            <input type="file" id="file-input" accept="image/*" style="display:none">
+            <input type="text" id="chat-input" class="chat-input" placeholder="Type a message..." autocomplete="off" autofocus>
+        </div>
+        <button class="send-btn" id="mic-btn" onclick="toggleRecording()">
+            🎤
+        </button>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()" style="display:none;">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+        </button>
+    </div>
+
+    <script>
+        const PHONE = "917702919936";
+        const chatContainer = document.getElementById('chat-container');
+        const chatInput = document.getElementById('chat-input');
+        const micBtn = document.getElementById('mic-btn');
+        const sendBtn = document.getElementById('send-btn');
+        const fileInput = document.getElementById('file-input');
+        
+        let messageCount = 0;
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+
+        // Toggle send/mic button based on input
+        chatInput.addEventListener('input', () => {
+            if (chatInput.value.trim().length > 0) {
+                micBtn.style.display = 'none';
+                sendBtn.style.display = 'flex';
+            } else {
+                micBtn.style.display = 'flex';
+                sendBtn.style.display = 'none';
+            }
+        });
+
+        function scrollToBottom() {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function appendMessage(msg) {
+            const isSent = msg.direction === 'out';
+            const div = document.createElement('div');
+            div.className = `message ${isSent ? 'sent' : 'received'}`;
+            
+            if (msg.text) {
+                const textSpan = document.createElement('span');
+                textSpan.innerHTML = msg.text.replace(/\n/g, '<br>');
+                div.appendChild(textSpan);
+            }
+            
+            if (msg.image) {
+                const imgEl = document.createElement('img');
+                imgEl.src = msg.image;
+                div.appendChild(imgEl);
+            }
+
+            if (msg.audio) {
+                const audioEl = document.createElement('audio');
+                audioEl.controls = true;
+                // Check if it's already a full data URI
+                if (msg.audio.startsWith('data:')) {
+                    audioEl.src = msg.audio;
+                } else {
+                    audioEl.src = `data:audio/wav;base64,${msg.audio}`;
+                }
+                audioEl.style.marginTop = msg.text ? '8px' : '0';
+                audioEl.style.maxWidth = '100%';
+                audioEl.style.height = '40px'; 
+                div.appendChild(audioEl);
+            }
+            
+            chatContainer.appendChild(div);
+            scrollToBottom();
+        }
+
+        async function postChat(payload) {
+            try {
+                await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                pollMessages();
+            } catch (err) {
+                console.error("Failed to send:", err);
+            }
+        }
+
+        async function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+            chatInput.value = '';
+            chatInput.dispatchEvent(new Event('input')); // reset buttons
+            await postChat({ phone: PHONE, text: text });
+        }
+
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Handle Image Upload
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = async function(event) {
+                const base64Image = event.target.result;
+                fileInput.value = ''; // reset
+                await postChat({ phone: PHONE, text: "", image_data: base64Image });
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Handle Voice Recording
+        async function toggleRecording() {
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    
+                    mediaRecorder.ondataavailable = e => {
+                        audioChunks.push(e.data);
+                    };
+                    
+                    mediaRecorder.onstop = () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const reader = new FileReader();
+                        reader.readAsDataURL(audioBlob);
+                        reader.onloadend = async function() {
+                            const base64Audio = reader.result;
+                            await postChat({ phone: PHONE, text: "", audio_data: base64Audio });
+                        };
+                    };
+                    
+                    mediaRecorder.start();
+                    isRecording = true;
+                    micBtn.classList.add('recording');
+                } catch (err) {
+                    alert('Microphone access denied or not available.');
+                    console.error(err);
+                }
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                micBtn.classList.remove('recording');
+            }
+        }
+
+        async function pollMessages() {
+            try {
+                const res = await fetch(`/api/messages/${PHONE}`);
+                if (!res.ok) return;
+                
+                const data = await res.json();
+                const messages = data.messages || [];
+                
+                if (messages.length > messageCount) {
+                    for (let i = messageCount; i < messages.length; i++) {
+                        appendMessage(messages[i]);
+                    }
+                    messageCount = messages.length;
+                }
+            } catch (err) {
+                console.error("Polling error:", err);
+            }
+        }
+
+        setInterval(pollMessages, 1000);
+        pollMessages();
+    </script>
+</body>
+</html>

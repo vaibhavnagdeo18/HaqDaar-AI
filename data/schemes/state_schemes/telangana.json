@@ -1,0 +1,19 @@
+{
+  "state": "Telangana",
+  "schemes": [
+    {
+      "name": "Aasara Pension",
+      "category": "pension",
+      "amount_monthly": 2016,
+      "eligibility": {
+        "relationship": ["spouse"],
+        "employment_type": ["any"],
+        "income_limit": 150000
+      },
+      "required_documents": ["death_certificate", "aadhaar", "income_certificate"],
+      "deadline_days": 90,
+      "filing_office": "MeeSeva",
+      "form_name": "Aasara Application Form"
+    }
+  ]
+}

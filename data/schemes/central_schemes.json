@@ -1,0 +1,37 @@
+{
+  "schemes": [
+    {
+      "name": "EPF Form 20",
+      "category": "central",
+      "type": "provident_fund",
+      "eligibility": {
+        "employment_type": ["organized", "government"],
+        "requires_uan": true
+      },
+      "deadline_days": 30,
+      "amount_calculation": "Total corpus + employer share"
+    },
+    {
+      "name": "PMJJBY",
+      "category": "central",
+      "type": "insurance",
+      "eligibility": {
+        "requires_active_bank_account": true,
+        "age_limit": [18, 50]
+      },
+      "deadline_days": 25,
+      "amount_flat": 200000
+    },
+    {
+      "name": "EDLI",
+      "category": "central",
+      "type": "insurance",
+      "eligibility": {
+        "employment_type": ["organized"],
+        "requires_active_epf": true
+      },
+      "amount_calculation": "min(700000, 35 * last_month_salary)",
+      "filed_with": "EPF Form 20"
+    }
+  ]
+}

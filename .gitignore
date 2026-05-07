@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Documents (uploaded user files)
+documents/*
+!documents/.gitkeep
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,44 @@
+{
+  "form_name": "EPF Form 20",
+  "version": "1.0",
+  "fields": {
+    "deceased_name": {
+      "source": "family.breadwinner_name",
+      "required": true
+    },
+    "deceased_dob": {
+      "source": "family.breadwinner_dob",
+      "required": true,
+      "format": "DD/MM/YYYY"
+    },
+    "date_of_death": {
+      "source": "family.date_of_death",
+      "required": true,
+      "format": "DD/MM/YYYY"
+    },
+    "epf_account_number": {
+      "source": "family.epf_account_number",
+      "required": true
+    },
+    "uan_number": {
+      "source": "family.uan_number",
+      "required": true
+    },
+    "claimant_name": {
+      "source": "family.claimant_name",
+      "required": true
+    },
+    "claimant_relationship": {
+      "source": "family.claimant_relationship",
+      "required": true
+    },
+    "bank_account": {
+      "source": "family.claimant_bank_account",
+      "required": true
+    },
+    "bank_ifsc": {
+      "source": "family.claimant_bank_ifsc",
+      "required": true
+    }
+  }
+}
