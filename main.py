@@ -66,7 +66,8 @@ form_agent = FormAgent(pdf_service)
 support_agent = SupportAgent(gemini_service)
 esign_service = ESignService()
 
-_processed_wamids: set[str] = set()
+import redis.asyncio as aioredis
+_redis: aioredis.Redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -632,13 +633,13 @@ async def _handle_payload(payload: dict):
                         if "messages" in value:
                             for message in value["messages"]:
                                 wamid = message.get("id", "")
-                                if wamid and wamid in _processed_wamids:
-                                    logger.info(f"Skipping duplicate WAMID {wamid}")
-                                    continue
                                 if wamid:
-                                    _processed_wamids.add(wamid)
-                                    if len(_processed_wamids) > 10000:
-                                        _processed_wamids.clear()
+                                    already_seen = await _redis.set(
+                                        f"wamid:{wamid}", "1", nx=True, ex=86400
+                                    )
+                                    if not already_seen:
+                                        logger.info(f"Skipping duplicate WAMID {wamid}")
+                                        continue
                                 sender_phone = message.get("from")
                                 msg_type = message.get("type")
                                 if msg_type == "interactive":
