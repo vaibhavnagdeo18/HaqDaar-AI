@@ -229,6 +229,16 @@ async def _resolve_choice_field(field: str, raw_input: str) -> str:
     except Exception:
         return raw_input
 
+# Interactive button/list options for each choice field.
+# IDs match the keys in _CHOICE_FIELD_NUM_MAP so existing resolution logic works unchanged.
+_INTERACTIVE_FIELDS: dict[str, list[tuple[str, str]]] = {
+    "preferred_language": [("1", "Telugu"), ("2", "Hindi"), ("3", "English")],
+    "employment_type":    [("1", "Government job"), ("2", "Private company"), ("3", "Own business"), ("4", "Daily wage")],
+    "had_epf":            [("1", "Yes"), ("2", "Not sure"), ("3", "No")],
+    "relationship":       [("1", "Wife / Husband"), ("2", "Son / Daughter"), ("3", "Mother / Father"), ("4", "Other")],
+    "state":              [("1", "Telangana"), ("2", "Andhra Pradesh"), ("3", "Maharashtra"), ("4", "Karnataka"), ("5", "Other")],
+}
+
 async def send_translated_message_and_voice(phone: str, text: str, case: Case):
     target_lang = case.onboarding_data.get("preferred_language", "English")
     translated_text = await sarvam_service.translate(text, "English", target_lang)
@@ -241,6 +251,25 @@ async def send_translated_message_and_voice(phone: str, text: str, case: Case):
         await asyncio.sleep(1) 
         await whatsapp_service.send_voice(phone, voice_bytes)
 
+async def send_question(phone: str, step_idx: int, case: Case):
+    """Send an onboarding question — tappable buttons for choice fields, text+voice for free-text fields."""
+    q = ONBOARDING_QUESTIONS[step_idx]
+    field = q["field"]
+    question_text = q["text"]
+    target_lang = case.onboarding_data.get("preferred_language", "English")
+    if field in _INTERACTIVE_FIELDS:
+        question_line = question_text.split('\n')[0]
+        translated_q = await sarvam_service.translate(question_line, "English", target_lang)
+        await whatsapp_service.send_interactive(phone, translated_q, _INTERACTIVE_FIELDS[field])
+        lang_code_map = {"Telugu": "te-IN", "Hindi": "hi-IN", "Tamil": "ta-IN", "Kannada": "kn-IN", "English": "en-IN"}
+        voice_bytes = await sarvam_service.text_to_speech(translated_q, lang_code_map.get(target_lang, "en-IN"))
+        if voice_bytes:
+            import asyncio as _asyncio
+            await _asyncio.sleep(1)
+            await whatsapp_service.send_voice(phone, voice_bytes)
+    else:
+        await send_translated_message_and_voice(phone, question_text, case)
+
 _GREETINGS = {"hi", "hello", "hey", "namaste", "నమస్కారం", "నమస్కార్", "నమస్తే", "नमस्ते", "నమస్కారం", "start", "begin", "ok", "okay", "hii", "helo"}
 
 async def process_user_message(sender_phone: str, message_text: str, session: AsyncSession):
@@ -249,8 +278,7 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
 
     # If language not yet chosen and user sent a greeting, just (re)ask the language question
     if case.onboarding_step == 0 and msg_clean in _GREETINGS:
-        lang_q = ONBOARDING_QUESTIONS[0]["text"]
-        await whatsapp_service.send_text(sender_phone, lang_q)
+        await send_question(sender_phone, 0, case)
         return
 
     # SupportAgent — runs first, before any claims logic
@@ -346,7 +374,7 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         resolved = await _resolve_choice_field(field, message_text)
         if not resolved and field == "preferred_language":
             # Unrecognised input — re-ask language question without advancing
-            await whatsapp_service.send_text(sender_phone, ONBOARDING_QUESTIONS[0]["text"])
+            await send_question(sender_phone, 0, case)
             return
         case.onboarding_data[field] = resolved
     elif field == "bank_ifsc":
@@ -458,9 +486,10 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         return
 
     if next_step < len(ONBOARDING_QUESTIONS):
-        await send_translated_message_and_voice(sender_phone, ONBOARDING_QUESTIONS[next_step]["text"], case)
+        await send_question(sender_phone, next_step, case)
     else:
-        if case.status == CaseStatus.onboarding: case.status = CaseStatus.verification_pending
+        if case.status == CaseStatus.onboarding:
+            case.status = CaseStatus.verification_pending
         await send_translated_message_and_voice(sender_phone, "Onboarding complete.", case)
     await session.commit()
 
@@ -608,7 +637,19 @@ async def _handle_payload(payload: dict):
                                         _processed_wamids.clear()
                                 sender_phone = message.get("from")
                                 msg_type = message.get("type")
-                                if msg_type == "text":
+                                if msg_type == "interactive":
+                                    # User tapped a button or list item — extract the reply ID
+                                    interactive = message.get("interactive", {})
+                                    itype = interactive.get("type", "")
+                                    if itype == "button_reply":
+                                        reply_id = interactive["button_reply"]["id"]
+                                    elif itype == "list_reply":
+                                        reply_id = interactive["list_reply"]["id"]
+                                    else:
+                                        reply_id = ""
+                                    if reply_id:
+                                        await process_user_message(sender_phone, reply_id, session)
+                                elif msg_type == "text":
                                     await process_user_message(sender_phone, message.get("text", {}).get("body", ""), session)
                                 elif msg_type in ("image", "document"):
                                     media_id = message.get(msg_type, {}).get("id")
@@ -657,8 +698,7 @@ async def _handle_payload(payload: dict):
                                                 await session.commit()
                                                 await session.refresh(case_for_lang)
                                                 logger.info(f"Script-detected language: {detected_lang}")
-                                                next_q = ONBOARDING_QUESTIONS[1]["text"]
-                                                await send_translated_message_and_voice(sender_phone, next_q, case_for_lang)
+                                                await send_question(sender_phone, 1, case_for_lang)
                                                 continue
                                             await session.commit()
                                             await session.refresh(case_for_lang)

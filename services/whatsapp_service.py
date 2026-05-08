@@ -74,13 +74,95 @@ class WhatsAppService:
                     return None
 
     async def send_text(self, to: str, message: str) -> None:
-        """Send text message."""
+        """Send text message, splitting into chunks if over WhatsApp's 4096-char limit."""
+        MAX = 4000
+        chunks = []
+        text = message
+        while text:
+            if len(text) <= MAX:
+                chunks.append(text)
+                break
+            split_at = text.rfind('\n', 0, MAX)
+            if split_at <= 0:
+                split_at = MAX
+            chunks.append(text[:split_at])
+            text = text[split_at:].lstrip()
+        for chunk in chunks:
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": to,
+                "type": "text",
+                "text": {"body": chunk}
+            }
+            await self._send_request(payload)
+
+    async def send_interactive(self, to: str, body: str, buttons: List[tuple]) -> None:
+        """
+        Send interactive message.
+        <=3 options → quick-reply buttons. >=4 options → list message.
+        buttons: list of (id, title) tuples. Titles capped at 20 chars (buttons) / 24 chars (list).
+        Falls back to plain text on any error.
+        """
+        try:
+            if len(buttons) <= 3:
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": to,
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button",
+                        "body": {"text": body[:1024]},
+                        "action": {
+                            "buttons": [
+                                {"type": "reply", "reply": {"id": btn_id, "title": title[:20]}}
+                                for btn_id, title in buttons
+                            ]
+                        }
+                    }
+                }
+            else:
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": to,
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "list",
+                        "body": {"text": body[:1024]},
+                        "action": {
+                            "button": "Select",
+                            "sections": [{
+                                "title": "Options",
+                                "rows": [
+                                    {"id": btn_id, "title": title[:24]}
+                                    for btn_id, title in buttons
+                                ]
+                            }]
+                        }
+                    }
+                }
+            await self._send_request(payload)
+        except Exception as e:
+            logger.error(f"Interactive message failed, falling back to text: {e}")
+            options_text = "\n".join(f"{btn_id}. {title}" for btn_id, title in buttons)
+            await self.send_text(to, f"{body}\n\n{options_text}")
+
+    async def send_template(self, to: str, template_name: str, lang_code: str, components: list = None) -> None:
+        """
+        Send a pre-approved WhatsApp Message Template — required for proactive outreach
+        outside the 24-hour session window.
+        Template must be registered and approved in Meta Business Manager first.
+        """
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
-            "type": "text",
-            "text": {"body": message}
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": lang_code},
+            }
         }
+        if components:
+            payload["template"]["components"] = components
         await self._send_request(payload)
 
     async def send_voice(self, to: str, audio_bytes: bytes) -> None:
