@@ -141,7 +141,7 @@ async def get_or_create_case(phone: str, session: AsyncSession) -> Case:
         await session.refresh(family)
     
     result = await session.execute(
-        select(Case).where(Case.family_id == family.id).where(Case.status != CaseStatus.filed).order_by(Case.created_at.desc())
+        select(Case).where(Case.family_id == family.id).order_by(Case.created_at.desc())
     )
     case = result.scalars().first()
     if not case:
@@ -263,6 +263,21 @@ _GREETINGS = {"hi", "hello", "hey", "namaste", "నమస్కారం", "న�
 async def process_user_message(sender_phone: str, message_text: str, session: AsyncSession):
     msg_clean = message_text.lower().strip()
     case = await get_or_create_case(sender_phone, session)
+
+    # Already-filed case — don't restart onboarding; show status or confirm submission
+    if case.status == CaseStatus.filed:
+        lang = case.onboarding_data.get("preferred_language", "English")
+        name = case.onboarding_data.get("breadwinner_name", "your family member")
+        entitlement = float(case.entitlement_total or 0)
+        amount_str = f"Rs. {entitlement:,.0f}" if entitlement > 0 else "your entitled benefits"
+        reply = (
+            f"Your claim for {name.title()} has already been submitted. "
+            f"Total entitlement: {amount_str}. "
+            "EPFO typically processes claims within 20 working days. "
+            "You can track it at epfindia.gov.in or call 1800-118-005."
+        )
+        await send_translated_message_and_voice(sender_phone, reply, case)
+        return
 
     # Greeting at any onboarding step → re-ask the current pending question
     if msg_clean in _GREETINGS and case.status == CaseStatus.onboarding:
