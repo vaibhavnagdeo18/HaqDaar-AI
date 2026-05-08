@@ -218,6 +218,3 @@ class WhatsAppService:
         else:
             logger.error(f"Failed to upload document {filename}")
 
-    async def send_interactive(self, to: str, body: str, buttons: List[str]) -> None:
-        """Send message with quick reply buttons."""
-        pass
