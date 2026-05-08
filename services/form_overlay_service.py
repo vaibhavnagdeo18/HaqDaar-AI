@@ -113,6 +113,28 @@ def _truncate(text: Optional[str], max_chars: int) -> str:
     return str(text)[:max_chars]
 
 
+import re as _re
+
+def _extract_pin(address: str) -> str:
+    """Extract 6-digit PIN from an address string (e.g. 'Hyderabad 500016')."""
+    m = _re.search(r'\b(\d{6})\b', address or "")
+    return m.group(1) if m else ""
+
+
+def _split_address(address: str) -> tuple[str, str, str]:
+    """
+    Split a free-text address into (line1, line2, pin).
+    Joins all non-PIN parts into two display lines.
+    """
+    pin = _extract_pin(address)
+    # Remove the PIN from the string, then split on commas
+    clean = _re.sub(r'\b\d{6}\b', '', address).strip().strip(',').strip()
+    parts = [p.strip() for p in clean.split(',') if p.strip()]
+    line1 = parts[0] if parts else ""
+    line2 = ", ".join(parts[1:]) if len(parts) > 1 else ""
+    return line1, line2, pin
+
+
 # ── Core overlay logic ────────────────────────────────────────────────────────
 
 def _build_page1_overlay(data: dict) -> bytes:
@@ -167,12 +189,14 @@ def _build_page1_overlay(data: dict) -> bytes:
         data.get("claimant_relationship") or data.get("relationship", ""), 30
     ).upper())
 
-    # Address
+    # Address — extract PIN from the address string; fall back to pin_code field
     address = data.get("claimant_address", "") or data.get("address", "")
-    lines = str(address).split(",") if address else []
-    put("address_line1", _truncate(lines[0].strip() if lines else "", 55).upper())
-    put("address_line2", _truncate(lines[1].strip() if len(lines) > 1 else "", 55).upper())
-    put("address_pin",   _truncate(data.get("pin_code", ""), 8))
+    line1, line2, pin = _split_address(address)
+    if not pin:
+        pin = _truncate(data.get("pin_code", ""), 8)
+    put("address_line1", _truncate(line1, 55).upper())
+    put("address_line2", _truncate(line2, 55).upper())
+    put("address_pin",   pin)
 
     c.showPage()
     c.save()
