@@ -252,23 +252,11 @@ async def send_translated_message_and_voice(phone: str, text: str, case: Case):
         await whatsapp_service.send_voice(phone, voice_bytes)
 
 async def send_question(phone: str, step_idx: int, case: Case):
-    """Send an onboarding question — tappable buttons for choice fields, text+voice for free-text fields."""
-    q = ONBOARDING_QUESTIONS[step_idx]
-    field = q["field"]
-    question_text = q["text"]
-    target_lang = case.onboarding_data.get("preferred_language", "English")
-    if field in _INTERACTIVE_FIELDS:
-        question_line = question_text.split('\n')[0]
-        translated_q = await sarvam_service.translate(question_line, "English", target_lang)
-        await whatsapp_service.send_interactive(phone, translated_q, _INTERACTIVE_FIELDS[field])
-        lang_code_map = {"Telugu": "te-IN", "Hindi": "hi-IN", "Tamil": "ta-IN", "Kannada": "kn-IN", "English": "en-IN"}
-        voice_bytes = await sarvam_service.text_to_speech(translated_q, lang_code_map.get(target_lang, "en-IN"))
-        if voice_bytes:
-            import asyncio as _asyncio
-            await _asyncio.sleep(1)
-            await whatsapp_service.send_voice(phone, voice_bytes)
-    else:
-        await send_translated_message_and_voice(phone, question_text, case)
+    """Send an onboarding question as translated text + voice note.
+    Interactive buttons are available via whatsapp_service.send_interactive() but require
+    a verified Meta Business Account — enable when moving to production.
+    """
+    await send_translated_message_and_voice(phone, ONBOARDING_QUESTIONS[step_idx]["text"], case)
 
 _GREETINGS = {"hi", "hello", "hey", "namaste", "నమస్కారం", "నమస్కార్", "నమస్తే", "नमस्ते", "నమస్కారం", "start", "begin", "ok", "okay", "hii", "helo"}
 
@@ -276,9 +264,10 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
     msg_clean = message_text.lower().strip()
     case = await get_or_create_case(sender_phone, session)
 
-    # If language not yet chosen and user sent a greeting, just (re)ask the language question
-    if case.onboarding_step == 0 and msg_clean in _GREETINGS:
-        await send_question(sender_phone, 0, case)
+    # Greeting at any onboarding step → re-ask the current pending question
+    if msg_clean in _GREETINGS and case.status == CaseStatus.onboarding:
+        step = min(case.onboarding_step, len(ONBOARDING_QUESTIONS) - 1)
+        await send_question(sender_phone, step, case)
         return
 
     # SupportAgent — runs first, before any claims logic
