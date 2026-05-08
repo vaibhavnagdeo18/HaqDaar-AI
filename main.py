@@ -667,28 +667,42 @@ async def _handle_payload(payload: dict):
                                         case_for_lang = await get_or_create_case(sender_phone, session)
                                         lang_name_to_code = {"Telugu": "te-IN", "Hindi": "hi-IN", "Tamil": "ta-IN", "Kannada": "kn-IN", "English": "en-IN"}
                                         current_lang = case_for_lang.onboarding_data.get("preferred_language", "")
-                                        # Default hint to te-IN (primary user base); override if language already set
+
+                                        if not current_lang and case_for_lang.onboarding_step == 0:
+                                            # Language not chosen yet — use en-IN so "1", "Telugu",
+                                            # "English", "Hindi" are all transcribed in Latin script
+                                            # and can be resolved through _resolve_choice_field.
+                                            transcript, _ = await sarvam_service.transcribe_voice(wav_bytes, "en-IN")
+                                            if not transcript.strip():
+                                                await send_question(sender_phone, 0, case_for_lang)
+                                                continue
+                                            logger.info(f"STT transcript [en-IN lang-select]: {transcript}")
+                                            resolved_lang = await _resolve_choice_field("preferred_language", transcript.strip())
+                                            if resolved_lang:
+                                                case_for_lang.onboarding_data["preferred_language"] = resolved_lang
+                                                flag_modified(case_for_lang, "onboarding_data")
+                                                case_for_lang.onboarding_step = 1
+                                                await session.commit()
+                                                await session.refresh(case_for_lang)
+                                                logger.info(f"Voice-resolved language: {resolved_lang}")
+                                                await send_question(sender_phone, 1, case_for_lang)
+                                            else:
+                                                # Could not resolve — re-ask language selection
+                                                await send_question(sender_phone, 0, case_for_lang)
+                                            continue
+
+                                        # Language already known — use correct hint
                                         lang_hint = lang_name_to_code.get(current_lang, "te-IN")
                                         transcript, _ = await sarvam_service.transcribe_voice(wav_bytes, lang_hint)
                                         if not transcript.strip():
                                             await whatsapp_service.send_text(sender_phone, "Sorry, I couldn't understand. Please type your answer or try speaking again clearly.")
                                             continue
                                         logger.info(f"STT transcript [{lang_hint}]: {transcript}")
-                                        # Detect language reliably from Unicode script of transcript
+                                        # Mid-flow: if language somehow still unset, detect from script
                                         if not current_lang:
                                             detected_lang = _detect_script_language(transcript)
                                             case_for_lang.onboarding_data["preferred_language"] = detected_lang
                                             flag_modified(case_for_lang, "onboarding_data")
-                                            if case_for_lang.onboarding_step == 0:
-                                                # Skip the language-selection question — we already know the language.
-                                                # Ask the first real question in the detected language instead of
-                                                # mis-processing this voice message as a field answer.
-                                                case_for_lang.onboarding_step = 1
-                                                await session.commit()
-                                                await session.refresh(case_for_lang)
-                                                logger.info(f"Script-detected language: {detected_lang}")
-                                                await send_question(sender_phone, 1, case_for_lang)
-                                                continue
                                             await session.commit()
                                             await session.refresh(case_for_lang)
                                             logger.info(f"Script-detected language mid-flow: {detected_lang}")
