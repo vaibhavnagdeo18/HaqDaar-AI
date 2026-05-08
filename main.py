@@ -264,32 +264,37 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         if support_result.intercept:
             return  # Pause claims flow for this turn; resume on next message
 
-    STATUS_TRIGGERS = {"status", "where is my claim", "my claim", "claim status", "update", "what happened", "kya hua", "claim"}
-    if any(t in msg_clean for t in STATUS_TRIGGERS):
+    STATUS_TRIGGERS = {"status", "where is my claim", "my claim", "claim status", "what happened", "kya hua", "స్థితి", "స్టేటస్", "స్థితేమిటి"}
+    STATUS_EXACT = {"claim", "update"}  # only trigger on exact match to avoid mid-onboarding collisions
+    is_status_query = (
+        any(t in msg_clean for t in STATUS_TRIGGERS)
+        or msg_clean in STATUS_EXACT
+    )
+    if is_status_query:
         data = case.onboarding_data
         name = data.get("breadwinner_name", "your family member")
         step = case.onboarding_step
         total = len(ONBOARDING_QUESTIONS)
-        lines = [f"Claim status for {name.title()}"]
-        lines.append("─" * 30)
+        lines = [f"Claim update for {name.title()}:"]
         if case.status.value == "filed":
-            lines.append("Form Status : Filed")
+            lines.append("Your forms have been filed.")
             if data.get("form5if_path"):
-                lines.append("Form 5(IF)  : Generated")
+                lines.append("Form 5IF has been generated and sent to you.")
             esign_status = data.get("esign_status", "")
             if esign_status == "signed":
-                lines.append(f"eSign       : Signed (ID: {data.get('esign_transaction_id','')})")
+                lines.append(f"The form has been digitally signed. Transaction ID: {data.get('esign_transaction_id', '')}")
             elif esign_status == "pending":
-                url = f"{settings.APP_BASE_URL}/esign/{data.get('esign_token','')}"
-                lines.append(f"eSign       : Pending — sign here:\n{url}")
+                url = f"{settings.APP_BASE_URL}/esign/{data.get('esign_token', '')}"
+                lines.append(f"The form is ready but not yet signed. Please sign it here: {url}")
         elif case.status.value == "onboarding":
-            lines.append(f"Progress    : {step}/{total} steps complete")
+            lines.append(f"You have completed {step} out of {total} steps.")
             if step < total:
-                lines.append(f"Next step   : {ONBOARDING_QUESTIONS[step]['text'].split(chr(10))[0]}")
+                next_q_text = ONBOARDING_QUESTIONS[step]['text'].split('\n')[0]
+                lines.append(f"Next question: {next_q_text}")
         elif case.status.value == "audit_failed":
-            lines.append("Status      : Documents need review")
+            lines.append("Your documents need to be reviewed. Please re-upload a clearer photo.")
         if case.entitlement_total and float(case.entitlement_total) > 0:
-            lines.append(f"Entitlement : ₹{float(case.entitlement_total):,.0f}")
+            lines.append(f"Your total entitlement is Rs. {float(case.entitlement_total):,.0f}")
         await send_translated_message_and_voice(sender_phone, "\n".join(lines), case)
         return
 
