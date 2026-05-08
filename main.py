@@ -27,6 +27,7 @@ from agents.compliance_agent import ComplianceAgent
 from agents.form_agent import FormAgent
 from agents.support_agent import SupportAgent
 from services.pdf_service import PDFService
+from services.esign_service import ESignService
 
 from models import Family, Case, CaseStatus
 from api.v1.b2b import router as b2b_router
@@ -63,6 +64,9 @@ reconciliation_agent = ReconciliationAgent(gemini_service, sarvam_service)
 compliance_agent = ComplianceAgent(gemini_service)
 form_agent = FormAgent(pdf_service)
 support_agent = SupportAgent(gemini_service)
+esign_service = ESignService()
+
+_processed_wamids: set[str] = set()
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -90,13 +94,41 @@ ONBOARDING_QUESTIONS = [
         "text": "Did they have an EPF (Provident Fund) account through their employer?\nReply 1 for Yes\nReply 2 for Not sure\nReply 3 for No"
     },
     {
-        "field": "state",
-        "text": "Which state are you in?\nReply 1 for Telangana\nReply 2 for Andhra Pradesh\nReply 3 for Maharashtra\nReply 4 for Karnataka\nReply 5 for Other"
+        "field": "claimant_name",
+        "text": "What is your full name? (You — the person making this claim)"
+    },
+    {
+        "field": "relationship",
+        "text": "What is your relationship to the deceased?\nReply 1 for Wife / Husband\nReply 2 for Son / Daughter\nReply 3 for Mother / Father\nReply 4 for Other"
+    },
+    {
+        "field": "claimant_dob",
+        "text": "What is your date of birth? (e.g. 01/01/1985)"
+    },
+    {
+        "field": "claimant_address",
+        "text": "What is your full address including PIN code? (e.g. H.No 5-10, Ameerpet, Hyderabad 500016)"
+    },
+    {
+        "field": "pf_account_no",
+        "text": "Do you know the EPF/UAN account number of the deceased?\nType the number, or reply 'skip' if not sure"
+    },
+    {
+        "field": "bank_account",
+        "text": "What is your bank account number? (where you want to receive the claim amount)"
+    },
+    {
+        "field": "bank_ifsc",
+        "text": "What is your bank IFSC code? (e.g. SBIN0001234)"
     },
     {
         "field": "death_certificate",
-        "text": "To begin your claims, I need to verify your documents. Please upload a clear photo of the Death Certificate."
-    }
+        "text": "Almost done! Please upload a clear photo of the Death Certificate."
+    },
+    {
+        "field": "state",
+        "text": "Which state are you in?\nReply 1 for Telangana\nReply 2 for Andhra Pradesh\nReply 3 for Maharashtra\nReply 4 for Karnataka\nReply 5 for Other"
+    },
 ]
 
 async def get_or_create_case(phone: str, session: AsyncSession) -> Case:
@@ -119,6 +151,84 @@ async def get_or_create_case(phone: str, session: AsyncSession) -> Case:
         await session.refresh(case)
     return case
 
+def _detect_script_language(text: str) -> str:
+    """Detect language from Unicode script ranges in the transcript — reliable regardless of STT language_code."""
+    for ch in text:
+        cp = ord(ch)
+        if 0x0C00 <= cp <= 0x0C7F:
+            return "Telugu"
+        if 0x0900 <= cp <= 0x097F:
+            return "Hindi"
+        if 0x0B80 <= cp <= 0x0BFF:
+            return "Tamil"
+        if 0x0C80 <= cp <= 0x0CFF:
+            return "Kannada"
+    return "English"
+
+_CHOICE_FIELD_OPTIONS = {
+    "preferred_language": {"Telugu": "Telugu", "తెలుగు": "Telugu", "hindi": "Hindi", "हिंदी": "Hindi", "english": "English"},
+    "employment_type": {
+        "government": "Government", "govt": "Government", "ప్రభుత్వం": "Government", "सरकारी": "Government",
+        "private": "Private", "ప్రైవేట్": "Private", "प्राइवेट": "Private",
+        "business": "Business", "own": "Business", "వ్యాపారం": "Business", "व्यापार": "Business",
+        "daily": "Daily Wage", "wage": "Daily Wage", "రోజువారీ": "Daily Wage", "दिहाड़ी": "Daily Wage",
+    },
+    "had_epf": {
+        "yes": "Yes", "అవును": "Yes", "हां": "Yes", "ha": "Yes", "haan": "Yes",
+        "no": "No", "లేదు": "No", "नहीं": "No",
+        "not sure": "Not sure", "don't know": "Not sure", "తెలియదు": "Not sure", "पता नहीं": "Not sure",
+    },
+    "relationship": {
+        "wife": "Wife/Husband", "husband": "Wife/Husband", "భర్త": "Wife/Husband", "భార్య": "Wife/Husband", "पति": "Wife/Husband", "पत्नी": "Wife/Husband",
+        "son": "Son/Daughter", "daughter": "Son/Daughter", "కొడుకు": "Son/Daughter", "కూతురు": "Son/Daughter", "बेटा": "Son/Daughter", "बेटी": "Son/Daughter",
+        "mother": "Mother/Father", "father": "Mother/Father", "అమ్మ": "Mother/Father", "నాన్న": "Mother/Father", "माँ": "Mother/Father", "पिता": "Mother/Father",
+    },
+    "state": {
+        "telangana": "Telangana", "తెలంగాణ": "Telangana",
+        "andhra": "Andhra Pradesh", "ఆంధ్ర": "Andhra Pradesh",
+        "maharashtra": "Maharashtra", "karnataka": "Karnataka",
+    },
+}
+
+_CHOICE_FIELD_NUM_MAP = {
+    "preferred_language": {"1": "Telugu", "2": "Hindi", "3": "English"},
+    "employment_type": {"1": "Government", "2": "Private", "3": "Business", "4": "Daily Wage"},
+    "had_epf": {"1": "Yes", "2": "Not sure", "3": "No"},
+    "relationship": {"1": "Wife/Husband", "2": "Son/Daughter", "3": "Mother/Father", "4": "Other"},
+    "state": {"1": "Telangana", "2": "Andhra Pradesh", "3": "Maharashtra", "4": "Karnataka", "5": "Other"},
+}
+
+async def _resolve_choice_field(field: str, raw_input: str) -> str:
+    """Resolve a natural-language or numbered answer to a canonical field value."""
+    num_map = _CHOICE_FIELD_NUM_MAP.get(field, {})
+    clean = raw_input.strip().lower()
+    if clean in num_map:
+        return num_map[clean]
+    keyword_map = _CHOICE_FIELD_OPTIONS.get(field, {})
+    for kw, val in keyword_map.items():
+        if kw in clean:
+            return val
+    # Language selection must be explicit — no Gemini fallback (avoids "hi" → "Hindi")
+    if field == "preferred_language":
+        return ""  # empty → caller will re-ask the question
+    # Gemini fallback for other choice fields with natural-language speech
+    options_str = " | ".join(num_map.values()) if num_map else field
+    prompt = (
+        f"The user was asked to choose for field '{field}'. Options: {options_str}.\n"
+        f"User said: \"{raw_input}\"\n"
+        f"Reply with ONLY the matching option name from the list, nothing else. "
+        f"If unclear, reply with the closest match."
+    )
+    try:
+        result = await gemini_service.model.generate_content_async(prompt)
+        answer = result.text.strip().strip('"').strip("'")
+        for val in num_map.values():
+            if val.lower() in answer.lower() or answer.lower() in val.lower():
+                return val
+        return answer or raw_input
+    except Exception:
+        return raw_input
+
 async def send_translated_message_and_voice(phone: str, text: str, case: Case):
     target_lang = case.onboarding_data.get("preferred_language", "English")
     translated_text = await sarvam_service.translate(text, "English", target_lang)
@@ -131,9 +241,17 @@ async def send_translated_message_and_voice(phone: str, text: str, case: Case):
         await asyncio.sleep(1) 
         await whatsapp_service.send_voice(phone, voice_bytes)
 
+_GREETINGS = {"hi", "hello", "hey", "namaste", "నమస్కారం", "నమస్కార్", "నమస్తే", "नमस्ते", "నమస్కారం", "start", "begin", "ok", "okay", "hii", "helo"}
+
 async def process_user_message(sender_phone: str, message_text: str, session: AsyncSession):
     msg_clean = message_text.lower().strip()
     case = await get_or_create_case(sender_phone, session)
+
+    # If language not yet chosen and user sent a greeting, just (re)ask the language question
+    if case.onboarding_step == 0 and msg_clean in _GREETINGS:
+        lang_q = ONBOARDING_QUESTIONS[0]["text"]
+        await whatsapp_service.send_text(sender_phone, lang_q)
+        return
 
     # SupportAgent — runs first, before any claims logic
     support_result = await support_agent.assess_message(
@@ -145,6 +263,35 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         await whatsapp_service.send_text(sender_phone, support_msg)
         if support_result.intercept:
             return  # Pause claims flow for this turn; resume on next message
+
+    STATUS_TRIGGERS = {"status", "where is my claim", "my claim", "claim status", "update", "what happened", "kya hua", "claim"}
+    if any(t in msg_clean for t in STATUS_TRIGGERS):
+        data = case.onboarding_data
+        name = data.get("breadwinner_name", "your family member")
+        step = case.onboarding_step
+        total = len(ONBOARDING_QUESTIONS)
+        lines = [f"Claim status for {name.title()}"]
+        lines.append("─" * 30)
+        if case.status.value == "filed":
+            lines.append("Form Status : Filed")
+            if data.get("form5if_path"):
+                lines.append("Form 5(IF)  : Generated")
+            esign_status = data.get("esign_status", "")
+            if esign_status == "signed":
+                lines.append(f"eSign       : Signed (ID: {data.get('esign_transaction_id','')})")
+            elif esign_status == "pending":
+                url = f"{settings.APP_BASE_URL}/esign/{data.get('esign_token','')}"
+                lines.append(f"eSign       : Pending — sign here:\n{url}")
+        elif case.status.value == "onboarding":
+            lines.append(f"Progress    : {step}/{total} steps complete")
+            if step < total:
+                lines.append(f"Next step   : {ONBOARDING_QUESTIONS[step]['text'].split(chr(10))[0]}")
+        elif case.status.value == "audit_failed":
+            lines.append("Status      : Documents need review")
+        if case.entitlement_total and float(case.entitlement_total) > 0:
+            lines.append(f"Entitlement : ₹{float(case.entitlement_total):,.0f}")
+        await send_translated_message_and_voice(sender_phone, "\n".join(lines), case)
+        return
 
     if "generate letter" in msg_clean or "download" in msg_clean or "file claim" in msg_clean:
         await send_translated_message_and_voice(sender_phone, "Generating your formal EPF Form 20... please wait.", case)
@@ -189,18 +336,18 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         return
 
     field = ONBOARDING_QUESTIONS[step_idx]["field"]
-    if field == "preferred_language":
-        lang_map = {"1": "Telugu", "2": "Hindi", "3": "English"}
-        case.onboarding_data[field] = lang_map.get(msg_clean, "English")
-    elif field == "employment_type":
-        emp_map = {"1": "Government", "2": "Private", "3": "Business", "4": "Daily Wage"}
-        case.onboarding_data[field] = emp_map.get(msg_clean, msg_clean)
-    elif field == "had_epf":
-        epf_map = {"1": "Yes", "2": "Not sure", "3": "No"}
-        case.onboarding_data[field] = epf_map.get(msg_clean, msg_clean)
-    elif field == "state":
-        state_map = {"1": "Telangana", "2": "Andhra Pradesh", "3": "Maharashtra", "4": "Karnataka", "5": "Other"}
-        case.onboarding_data[field] = state_map.get(msg_clean, msg_clean)
+    CHOICE_FIELDS = {"preferred_language", "employment_type", "had_epf", "relationship", "state"}
+    if field in CHOICE_FIELDS:
+        resolved = await _resolve_choice_field(field, message_text)
+        if not resolved and field == "preferred_language":
+            # Unrecognised input — re-ask language question without advancing
+            await whatsapp_service.send_text(sender_phone, ONBOARDING_QUESTIONS[0]["text"])
+            return
+        case.onboarding_data[field] = resolved
+    elif field == "bank_ifsc":
+        case.onboarding_data[field] = message_text.strip().upper()
+    elif field == "pf_account_no":
+        case.onboarding_data[field] = "" if msg_clean in ("skip", "తెలియదు", "पता नहीं", "don't know") else message_text.strip()
     elif field == "death_certificate":
         # For document uploads, msg_clean will be a local file path saved by the webhook handler.
         # Run quality pre-flight before accepting the step.
@@ -273,6 +420,20 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
                 )
                 case.status = CaseStatus.filed
                 logger.info(f"Form5IF sent to {sender_phone}, saved at {form5if.file_path}")
+
+                # Create eSign request and send signing link
+                esign_req = esign_service.create_request(
+                    str(case.id), settings.SECRET_KEY, settings.APP_BASE_URL
+                )
+                case.onboarding_data["esign_token"] = esign_req["token"]
+                case.onboarding_data["esign_transaction_id"] = esign_req["transaction_id"]
+                case.onboarding_data["esign_status"] = "pending"
+                sign_msg = (
+                    f"To make this form legally valid, please sign it using Aadhaar eSign:\n\n"
+                    f"{esign_req['signing_url']}\n\n"
+                    f"Tap the link, enter your Aadhaar OTP, and your signed form will be sent back here."
+                )
+                await whatsapp_service.send_text(sender_phone, sign_msg)
             except Exception as e:
                 logger.error(f"Form5IF overlay failed, falling back to generated form: {e}")
                 generated = await form_agent.generate_epf_form(case.onboarding_data)
@@ -298,6 +459,120 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         await send_translated_message_and_voice(sender_phone, "Onboarding complete.", case)
     await session.commit()
 
+ESIGN_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Haqdaar — Aadhaar eSign</title>
+<style>
+  body{{font-family:sans-serif;background:#f5f7fa;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+  .card{{background:#fff;border-radius:12px;padding:32px;max-width:420px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.08)}}
+  h2{{color:#1a56db;margin-top:0}}
+  .field{{margin:8px 0 16px}}
+  label{{font-size:13px;color:#555;display:block;margin-bottom:4px}}
+  input{{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;box-sizing:border-box}}
+  button{{width:100%;padding:12px;background:#1a56db;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-top:8px}}
+  button:hover{{background:#1447b3}}
+  .info{{background:#eff6ff;border-left:4px solid #1a56db;padding:12px;border-radius:4px;font-size:13px;color:#1e40af;margin-bottom:20px}}
+  .txn{{font-size:12px;color:#9ca3af;text-align:center;margin-top:16px}}
+  {extra_style}
+</style></head>
+<body><div class="card">
+  <h2>Aadhaar eSign</h2>
+  <div class="info">You are signing your official EPFO Form 5(IF) for <strong>{name}</strong>. This makes the form legally valid for submission.</div>
+  <form method="post">
+    <div class="field"><label>Your Aadhaar-linked mobile OTP</label>
+    <input name="otp" type="text" maxlength="6" placeholder="Enter 6-digit OTP" required autofocus></div>
+    <button type="submit">Sign with Aadhaar eSign</button>
+  </form>
+  <div class="txn">Transaction ID: {txn_id}</div>
+</div></body></html>"""
+
+ESIGN_SUCCESS = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Signed — Haqdaar</title>
+<style>body{{font-family:sans-serif;background:#f5f7fa;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#fff;border-radius:12px;padding:32px;max-width:420px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center}}
+.check{{font-size:64px}} h2{{color:#059669}} p{{color:#374151;font-size:15px}}</style></head>
+<body><div class="card"><div class="check">✅</div>
+<h2>Document Signed!</h2>
+<p>Your signed Form 5(IF) has been sent to your WhatsApp. Present it at your nearest EPFO office or MeeSeva centre.</p>
+</div></body></html>"""
+
+@app.get("/esign/{token}", response_class=HTMLResponse)
+async def esign_page(token: str):
+    async with AsyncSession(engine) as session:
+        result = await session.execute(
+            select(Case).join(Family).where(
+                Case.onboarding_data.op('->>')('esign_token') == token
+            )
+        )
+        case = result.scalars().first()
+        if not case:
+            return HTMLResponse("<h3>Invalid or expired signing link.</h3>", status_code=404)
+        name = case.onboarding_data.get("breadwinner_name", "Deceased")
+        txn = case.onboarding_data.get("esign_transaction_id", "")
+        html = ESIGN_PAGE.format(name=name.title(), txn_id=txn, extra_style="")
+        return HTMLResponse(html)
+
+@app.post("/esign/{token}", response_class=HTMLResponse)
+async def esign_confirm(token: str, request: Request):
+    form = await request.form()
+    otp = form.get("otp", "").strip()
+    if len(otp) != 6 or not otp.isdigit():
+        async with AsyncSession(engine) as session:
+            result = await session.execute(
+                select(Case).join(Family).where(Case.onboarding_data.op('->>')('esign_token') == token)
+            )
+            case = result.scalars().first()
+            name = case.onboarding_data.get("breadwinner_name", "Deceased") if case else ""
+            txn = case.onboarding_data.get("esign_transaction_id", "") if case else ""
+        html = ESIGN_PAGE.format(name=name.title(), txn_id=txn,
+                                  extra_style=".error{color:#dc2626;font-size:13px;margin-top:8px}")
+        return HTMLResponse(html.replace("</form>", '<p class="error">Please enter a valid 6-digit OTP.</p></form>'))
+
+    async with AsyncSession(engine) as session:
+        result = await session.execute(
+            select(Case).options(selectinload(Case.family)).join(Family).where(
+                Case.onboarding_data.op('->>')('esign_token') == token
+            )
+        )
+        case = result.scalars().first()
+        if not case or case.onboarding_data.get("esign_status") == "signed":
+            return HTMLResponse("<h3>This link has already been used or is invalid.</h3>", status_code=400)
+
+        file_path = case.onboarding_data.get("form5if_path")
+        if not file_path or not os.path.exists(file_path):
+            return HTMLResponse("<h3>Form not found. Please contact support.</h3>", status_code=404)
+
+        with open(file_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        signer_name = case.onboarding_data.get("claimant_name") or case.onboarding_data.get("breadwinner_name", "Claimant")
+        txn_id = case.onboarding_data.get("esign_transaction_id", "")
+        signed_pdf = esign_service.apply_signature(pdf_bytes, signer_name, txn_id)
+
+        signed_path = file_path.replace(".pdf", "_signed.pdf")
+        with open(signed_path, "wb") as f:
+            f.write(signed_pdf)
+
+        case.onboarding_data["esign_status"] = "signed"
+        case.onboarding_data["esign_signed_path"] = signed_path
+        flag_modified(case, "onboarding_data")
+        await session.commit()
+
+        phone = case.family.whatsapp_number
+        caption = (
+            "Your Form 5(IF) has been digitally signed via Aadhaar eSign. "
+            f"Transaction ID: {txn_id}. "
+            "Present this at your nearest EPFO office or MeeSeva centre."
+        )
+        target_lang = case.onboarding_data.get("preferred_language", "English")
+        translated_caption = await sarvam_service.translate(caption, "English", target_lang)
+        await whatsapp_service.send_document(phone, signed_pdf, f"SIGNED_Form5IF_{str(case.id)[:8]}.pdf", caption=translated_caption)
+        logger.info(f"Signed Form5IF delivered to {phone}, txn {txn_id}")
+
+    return HTMLResponse(ESIGN_SUCCESS)
+
 @app.get("/webhook/whatsapp")
 async def verify_whatsapp_webhook(request: Request):
     mode = request.query_params.get("hub.mode")
@@ -318,6 +593,14 @@ async def _handle_payload(payload: dict):
                         value = change.get("value", {})
                         if "messages" in value:
                             for message in value["messages"]:
+                                wamid = message.get("id", "")
+                                if wamid and wamid in _processed_wamids:
+                                    logger.info(f"Skipping duplicate WAMID {wamid}")
+                                    continue
+                                if wamid:
+                                    _processed_wamids.add(wamid)
+                                    if len(_processed_wamids) > 10000:
+                                        _processed_wamids.clear()
                                 sender_phone = message.get("from")
                                 msg_type = message.get("type")
                                 if msg_type == "text":
@@ -331,6 +614,51 @@ async def _handle_payload(payload: dict):
                                         with open(local_path, "wb") as f:
                                             f.write(media_bytes)
                                         await process_user_message(sender_phone, local_path, session)
+                                elif msg_type == "audio":
+                                    media_id = message.get("audio", {}).get("id")
+                                    if media_id:
+                                        import io
+                                        from pydub import AudioSegment
+                                        audio_bytes = await whatsapp_service.download_media(media_id)
+                                        try:
+                                            ogg_audio = AudioSegment.from_ogg(io.BytesIO(audio_bytes))
+                                            wav_io = io.BytesIO()
+                                            ogg_audio.export(wav_io, format="wav")
+                                            wav_bytes = wav_io.getvalue()
+                                        except Exception as conv_err:
+                                            logger.error(f"Voice conversion error: {conv_err}")
+                                            await whatsapp_service.send_text(sender_phone, "Sorry, I couldn't process the voice message. Please type your response.")
+                                            continue
+                                        case_for_lang = await get_or_create_case(sender_phone, session)
+                                        lang_name_to_code = {"Telugu": "te-IN", "Hindi": "hi-IN", "Tamil": "ta-IN", "Kannada": "kn-IN", "English": "en-IN"}
+                                        current_lang = case_for_lang.onboarding_data.get("preferred_language", "")
+                                        # Default hint to te-IN (primary user base); override if language already set
+                                        lang_hint = lang_name_to_code.get(current_lang, "te-IN")
+                                        transcript, _ = await sarvam_service.transcribe_voice(wav_bytes, lang_hint)
+                                        if not transcript.strip():
+                                            await whatsapp_service.send_text(sender_phone, "Sorry, I couldn't understand. Please type your answer or try speaking again clearly.")
+                                            continue
+                                        logger.info(f"STT transcript [{lang_hint}]: {transcript}")
+                                        # Detect language reliably from Unicode script of transcript
+                                        if not current_lang:
+                                            detected_lang = _detect_script_language(transcript)
+                                            case_for_lang.onboarding_data["preferred_language"] = detected_lang
+                                            flag_modified(case_for_lang, "onboarding_data")
+                                            if case_for_lang.onboarding_step == 0:
+                                                # Skip the language-selection question — we already know the language.
+                                                # Ask the first real question in the detected language instead of
+                                                # mis-processing this voice message as a field answer.
+                                                case_for_lang.onboarding_step = 1
+                                                await session.commit()
+                                                await session.refresh(case_for_lang)
+                                                logger.info(f"Script-detected language: {detected_lang}")
+                                                next_q = ONBOARDING_QUESTIONS[1]["text"]
+                                                await send_translated_message_and_voice(sender_phone, next_q, case_for_lang)
+                                                continue
+                                            await session.commit()
+                                            await session.refresh(case_for_lang)
+                                            logger.info(f"Script-detected language mid-flow: {detected_lang}")
+                                        await process_user_message(sender_phone, transcript.strip(), session)
         except Exception as e:
             logger.error(f"Webhook processing error: {e}")
             await session.rollback()

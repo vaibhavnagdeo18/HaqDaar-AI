@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     
     STORAGE_PATH: str = os.getenv("STORAGE_PATH", "./documents")
     SECRET_KEY: str = os.getenv("SECRET_KEY", "supersecret")
+    APP_BASE_URL: str = os.getenv("APP_BASE_URL", "https://icebound-holly-dimply.ngrok-free.dev")
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 

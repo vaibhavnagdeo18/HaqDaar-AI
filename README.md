@@ -1,6 +1,6 @@
 # GhostWriter AI (Haqdaar)
 
-> WhatsApp-first agentic system that helps Indian families file post-death EPF and insurance claims — with multilingual voice support, document quality checks, and auto-generated government forms.
+> WhatsApp-first agentic system that helps Indian families file post-death EPF and insurance claims — with multilingual voice support, document quality checks, auto-generated government forms, and Aadhaar eSign.
 
 ---
 
@@ -8,13 +8,15 @@
 
 When a breadwinner dies, the family must file claims across EPF, EDLI insurance, state pension schemes, and more. The process requires multiple forms, document verification, and compliance checks — typically taking months with a lawyer. Haqdaar does this over WhatsApp in under 10 minutes.
 
-The user sends a message. The system:
-1. Guides them through onboarding questions in their language (Telugu, Hindi, or English)
-2. Sends voice notes at every step using Sarvam TTS
-3. Verifies uploaded documents using Gemini Vision
-4. Discovers all eligible schemes and calculates total entitlement
-5. Runs a 100-point compliance audit
-6. Generates and delivers the official EPFO Form 5(IF) pre-filled with all their details
+The user sends a message or voice note. The system:
+1. Detects their language from the first voice message (Telugu, Hindi, or English) — no setup needed
+2. Guides them through onboarding in their language via text and voice notes (Sarvam TTS)
+3. Collects all 14 fields needed to fill Form 5(IF): claimant details, bank account, PF number
+4. Verifies uploaded documents using Gemini Vision (6-point quality check)
+5. Discovers all eligible schemes and calculates total entitlement
+6. Runs a 100-point compliance audit
+7. Generates and delivers the official EPFO Form 5(IF) pre-filled with all their details
+8. Sends an Aadhaar eSign link to make the form legally submittable
 
 ---
 
@@ -23,13 +25,19 @@ The user sends a message. The system:
 | Feature | Status |
 | :--- | :--- |
 | WhatsApp webhook (Meta Cloud API) | Live |
-| Multilingual onboarding flow | Live — Telugu, Hindi, English |
-| Voice notes via Sarvam TTS | Live — OGG Opus for WhatsApp |
+| Multilingual onboarding — Telugu, Hindi, English | Live |
+| Voice notes via Sarvam TTS (OGG Opus) | Live |
+| Voice input via Sarvam STT (saarika:v2.5) | Live |
+| Auto language detection from voice (Unicode script) | Live |
+| Natural language voice answers for choice questions | Live — Gemini fallback |
+| WAMID deduplication (no duplicate replies) | Live |
 | Document QualityAgent (Gemini Vision) | Live — 6-point pre-flight check |
 | EntitlementAgent | Live — EPF, EDLI, PMJJBY, state schemes |
 | ComplianceAgent (100-point audit) | Live |
-| Form5IF overlay (official EPFO template) | Live — pre-filled PDF delivered over WhatsApp |
+| Form 5(IF) overlay (official EPFO template) | Live — 14-field pre-filled PDF |
 | EPF Form 20 fallback | Live |
+| Aadhaar eSign (demo mode) | Live — visual signature block, OTP page |
+| Claim status tracking ("where is my claim?") | Live |
 | GriefSupportAgent | Live — empathy intercept before claims flow |
 | ReconciliationAgent | Live — identity mismatch + affidavit generation |
 | DisputeAgent | Live — denial letter objection drafting |
@@ -50,7 +58,23 @@ The user sends a message. The system:
 | GriefSupportAgent | Detects grief/distress, responds with empathy, optionally pauses claims flow |
 | ReconciliationAgent | Detects name mismatches across documents, drafts affidavits |
 | DisputeAgent | Analyzes claim denial letters, drafts legal-grade objection responses |
-| FormAgent | Overlays family data onto official Form5IF.pdf template; falls back to ReportLab Form 20 |
+| FormAgent | Overlays family data onto official Form 5(IF) PDF template; falls back to ReportLab Form 20 |
+
+---
+
+## Voice Flow
+
+When a user sends a voice message:
+1. OGG Opus (WhatsApp format) is converted to WAV via pydub
+2. Sarvam STT (`saarika:v2.5`) transcribes with `te-IN` hint by default
+3. Language is detected from Unicode script ranges in the transcript (reliable vs API language_code):
+   - Telugu: U+0C00–U+0C7F
+   - Hindi (Devanagari): U+0900–U+097F
+   - Tamil: U+0B80–U+0BFF
+   - Kannada: U+0C80–U+0CFF
+4. On the first voice message, `preferred_language` is auto-set and the language-selection step is skipped
+5. For multiple-choice questions (employment type, relationship, state), natural speech is resolved via a Gemini prompt mapping free text to the canonical option
+6. All replies are sent as both text and voice note in the detected language
 
 ---
 
@@ -60,13 +84,13 @@ The user sends a message. The system:
 | :--- | :--- |
 | Backend | FastAPI (async Python) |
 | LLM | Google Gemini 2.5 Flash |
-| STT / TTS / Translation | Sarvam AI (Indian language optimized) |
+| STT / TTS / Translation | Sarvam AI — saarika:v2.5 / bulbul:v2 |
 | Messaging | Meta WhatsApp Cloud API v18 |
 | Database | PostgreSQL via async SQLAlchemy |
 | Migrations | Alembic |
 | Task queue | Celery + Redis |
 | PDF generation | ReportLab + pypdf overlay |
-| Audio | pydub + FFmpeg (WAV to OGG Opus) |
+| Audio | pydub + FFmpeg (OGG Opus to WAV) |
 | Infrastructure | Docker Compose |
 
 ---
@@ -81,6 +105,7 @@ Meta Cloud API --> POST /webhook/whatsapp (ngrok / production URL)
                           |
                           v
                     FastAPI (main.py)
+                    [WAMID dedup — no retries]
                           |
           ┌───────────────┼───────────────┐
           v               v               v
@@ -90,9 +115,9 @@ Meta Cloud API --> POST /webhook/whatsapp (ngrok / production URL)
           v               v               v
    QualityAgent   EntitlementAgent  ComplianceAgent
                           |
-                    FormAgent (Form5IF overlay)
+                    FormAgent (Form 5IF overlay)
                           |
-                    PDF delivered over WhatsApp
+                    PDF + eSign link → WhatsApp
 ```
 
 ---
@@ -148,7 +173,29 @@ DATABASE_URL=postgresql+asyncpg://user:password@postgres:5432/ghostwriter
 REDIS_URL=redis://redis:6379/0
 STORAGE_PATH=./documents
 SECRET_KEY=
+APP_BASE_URL=                 # your ngrok or production domain
 ```
+
+---
+
+## Onboarding Fields (14 steps)
+
+| Step | Field | Description |
+| :--- | :--- | :--- |
+| 1 | preferred_language | Telugu / Hindi / English — auto-detected from voice |
+| 2 | breadwinner_name | Name of the deceased |
+| 3 | date_of_death | Date of death |
+| 4 | employment_type | Government / Private / Business / Daily Wage |
+| 5 | had_epf | Whether the deceased had an EPF account |
+| 6 | claimant_name | Name of the person filing the claim |
+| 7 | relationship | Relationship to deceased |
+| 8 | claimant_dob | Claimant date of birth |
+| 9 | claimant_address | Full address with PIN code |
+| 10 | pf_account_no | EPF / UAN number (or skip) |
+| 11 | bank_account | Bank account number for claim payment |
+| 12 | bank_ifsc | IFSC code |
+| 13 | death_certificate | Photo upload — Gemini Vision quality check |
+| 14 | state | State for scheme eligibility lookup |
 
 ---
 
@@ -177,6 +224,19 @@ Results (including generated PDFs as base64) are delivered to the partner's webh
 
 ---
 
+## eSign Flow
+
+After Form 5(IF) is generated, the system:
+1. Creates a unique signing token and transaction ID
+2. Sends a signing URL to the user over WhatsApp: `/esign/{token}`
+3. The user opens the page and submits any 6-digit OTP (demo mode)
+4. A visual Aadhaar eSign block is overlaid on the PDF (blue border, name, transaction ID, date, "Verified by Haqdaar AI | CDAC eSign")
+5. The signed PDF is sent back to the user over WhatsApp
+
+Production swap: replace the OTP handler in `services/esign_service.py` with a call to the CDAC / NSDL Aadhaar eSign gateway.
+
+---
+
 ## Project Structure
 
 ```
@@ -196,9 +256,10 @@ ghostwriter/
 ├── services/
 │   ├── whatsapp_service.py
 │   ├── gemini_service.py
-│   ├── sarvam_service.py
+│   ├── sarvam_service.py          # STT saarika:v2.5 / TTS bulbul:v2
 │   ├── pdf_service.py
-│   └── form_overlay_service.py    # Form5IF coordinate overlay
+│   ├── esign_service.py           # Aadhaar eSign (demo mode)
+│   └── form_overlay_service.py    # Form 5IF coordinate overlay
 ├── core/
 │   ├── config.py
 │   ├── database.py

@@ -12,30 +12,29 @@ class SarvamService:
             "api-subscription-key": self.api_key
         }
 
-    async def transcribe_voice(self, audio_bytes: bytes, language_hint: str = "hi-IN") -> str:
+    async def transcribe_voice(self, audio_bytes: bytes, language_hint: str = "hi-IN") -> tuple[str, str]:
         """
-        Transcribe audio bytes using Sarvam STT API.
+        Transcribe WAV audio bytes using Sarvam STT API.
+        Returns (transcript, detected_language_code).
         """
         url = f"{self.base_url}/speech-to-text"
-        
-        # Sarvam usually expects multipart/form-data for files
         data = aiohttp.FormData()
-        data.add_field('file', audio_bytes, filename='audio.webm', content_type='audio/webm')
-        data.add_field('language_code', language_hint)
-        
+        data.add_field("file", audio_bytes, filename="audio.wav", content_type="audio/wav")
+        data.add_field("language_code", language_hint)
+        data.add_field("model", "saarika:v2.5")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, data=data, headers=self.headers) as resp:
                     if resp.status == 200:
                         result = await resp.json()
-                        return result.get("transcript", "")
+                        return result.get("transcript", ""), result.get("language_code", language_hint)
                     else:
                         error_text = await resp.text()
                         logger.error(f"Sarvam STT Error {resp.status}: {error_text}")
-                        return ""
+                        return "", language_hint
         except Exception as e:
             logger.error(f"Error calling Sarvam STT: {e}")
-            return ""
+            return "", language_hint
 
     async def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         """
