@@ -272,10 +272,11 @@ async def process_user_message(sender_phone: str, message_text: str, session: As
         entitlement = float(case.entitlement_total or 0)
         amount_str = f"Rs. {entitlement:,.0f}" if entitlement > 0 else "your entitled benefits"
         reply = (
-            f"Your claim for {name.title()} has already been submitted. "
+            f"Your Form 5(IF) for {name.title()} has been filled and sent to you. "
             f"Total entitlement: {amount_str}. "
-            "EPFO typically processes claims within 20 working days. "
-            "You can track it at epfindia.gov.in or call 1800-118-005."
+            "Next step: Print the form, sign it, and submit it at your nearest EPFO office or MeeSeva centre. "
+            "EPFO typically processes claims within 20 working days after submission. "
+            "For help, call EPFO helpline: 1800-118-005."
         )
         await send_translated_message_and_voice(sender_phone, reply, case)
         return
