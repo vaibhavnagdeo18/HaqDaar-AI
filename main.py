@@ -539,9 +539,9 @@ ESIGN_SUCCESS = """<!DOCTYPE html>
 
 @app.get("/esign/{token}", response_class=HTMLResponse)
 async def esign_page(token: str):
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Case).join(Family).where(
+            select(Case).where(
                 Case.onboarding_data.op('->>')('esign_token') == token
             )
         )
@@ -558,9 +558,9 @@ async def esign_confirm(token: str, request: Request):
     form = await request.form()
     otp = form.get("otp", "").strip()
     if len(otp) != 6 or not otp.isdigit():
-        async with AsyncSession(engine) as session:
+        async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(Case).join(Family).where(Case.onboarding_data.op('->>')('esign_token') == token)
+                select(Case).where(Case.onboarding_data.op('->>')('esign_token') == token)
             )
             case = result.scalars().first()
             name = case.onboarding_data.get("breadwinner_name", "Deceased") if case else ""
@@ -569,9 +569,9 @@ async def esign_confirm(token: str, request: Request):
                                   extra_style=".error{color:#dc2626;font-size:13px;margin-top:8px}")
         return HTMLResponse(html.replace("</form>", '<p class="error">Please enter a valid 6-digit OTP.</p></form>'))
 
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Case).options(selectinload(Case.family)).join(Family).where(
+            select(Case).options(selectinload(Case.family)).where(
                 Case.onboarding_data.op('->>')('esign_token') == token
             )
         )
@@ -735,7 +735,7 @@ async def handle_whatsapp_webhook(request: Request):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Case).options(selectinload(Case.family)).join(Family).order_by(Case.created_at.desc())
         )
@@ -753,7 +753,7 @@ async def dashboard(request: Request):
 
 @app.get("/api/cases/{phone}")
 async def get_case_detail(phone: str):
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Case).options(selectinload(Case.family)).join(Family).where(Family.whatsapp_number == phone)
         )
